@@ -20,3 +20,4 @@
 set part xcu55c-fsvh2892-2L-e
 set board_part xilinx.com:au55c:part0:1.0
 set zynq_family 0
+set hw_device xcu280_u55c_0

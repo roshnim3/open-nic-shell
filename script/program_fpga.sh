@@ -1,4 +1,4 @@
-#!/bin/bash
+!/bin/bash
 
 # Tested with Supermicro server.
 
