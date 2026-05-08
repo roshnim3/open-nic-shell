@@ -15,4 +15,5 @@
 # limitations under the License.
 #
 # *************************************************************************
+read_verilog -quiet -sv packetparser_322mhz.sv
 read_verilog -quiet -sv p2p_322mhz.sv
