@@ -164,11 +164,15 @@ module packetparser_322mhz #(
                 snapshot_pending <= 1'b0;
             end
 
-            if ((next_buffer_data_count >= 2) && (msg_count < msg_num)) begin
+            // Use buffer_data_count (NBA-stable from prior cycle) — not
+            // next_buffer_data_count — so the parser only operates on bytes
+            // whose buffer writes have already settled. Otherwise the parse
+            // reads X from circular_buffer entries being written this cycle.
+            if ((buffer_data_count >= 2) && (msg_count < msg_num)) begin
                 msg_size = {circular_buffer[read_ptr], circular_buffer[(read_ptr + 1) % BUFFER_SIZE]} + 16'd2;
                 current_msg_size <= msg_size;
 
-                if ((next_buffer_data_count >= msg_size) && (msg_size > 16'd2) && (msg_size <= MAX_MSG_SIZE + 16'd2)) begin
+                if ((buffer_data_count >= msg_size) && (msg_size > 16'd2) && (msg_size <= MAX_MSG_SIZE + 16'd2)) begin
                     parsing_active <= 1'b1;
                     snapshot_pending <= 1'b1;
 
