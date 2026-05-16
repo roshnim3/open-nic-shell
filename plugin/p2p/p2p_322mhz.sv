@@ -206,7 +206,7 @@ module p2p_322mhz #(
     .reg_rstn       (axil_aresetn)
   );
 
-  packetparser_322mhz #(
+  packetparser_322mhz_simple #(
     .NUM_CMAC_PORT (NUM_CMAC_PORT)
   ) parser_inst (
     .s_axis_cmac_rx_tvalid (s_axis_cmac_rx_tvalid),
