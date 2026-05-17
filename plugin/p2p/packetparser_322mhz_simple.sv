@@ -3,32 +3,39 @@
 // *************************************************************************
 // Simplified ITCH parser for OpenNIC bitstream closure.
 //
-// Drop-in replacement for packetparser_322mhz with the same port list,
-// designed to map to a handful of registers + a few muxes instead of the
+// Drop-in replacement for packetparser_322mhz with the same port list.
+// Designed to map to a handful of registers + a few muxes instead of the
 // 4 KB byte-addressable buffer the full parser uses.
+//
+// Tier 3 (this version) adds messages-spanning-beat-1->beat-2 support for
+// msg_num=2 packets, getting us as close to the original parser's
+// behaviour as we can while still closing P&R.
 //
 // Features:
 //   - 3 ITCH message types decoded: 0x41 Add Order, 0x69 Order Executed,
-//     0x68 Stock Trading Action. Anything else captures msg_type and
-//     bumps an "unknown" counter.
+//     0x68 Stock Trading Action. Anything else captures msg_type only
+//     and bumps an "unknown" counter.
 //   - Per-message-type counters (4 x 16-bit).
-//   - Single-beat multi-message support for msg_num=2. The second message
-//     starts at a variable byte offset within beat 1; for each (msg1_type,
-//     msg2_type) combination that fits in 64 bytes, the parser extracts
-//     msg2's fields from fixed tdata positions (no runtime barrel shifter).
-//     msg1's would-be field values are overwritten by msg2's via NBA
-//     last-wins semantics, so the AXI-Lite snapshot always shows the
-//     "latest" message in the packet. Per-type counters bump for BOTH
-//     messages via blocking accumulators.
+//   - msg_num <= 2 support, including all (msg1, msg2) combinations where
+//     msg2's parsed fields span beat 1 -> beat 2:
+//       (0x41, 0x41): stock_sym partial in beat 1, rest + price in beat 2
+//       (0x69, 0x41): stock_sym partial in beat 1, rest + price in beat 2
+//     Other (0x41, 0x69) span case has all fields in beat 1 -> handled in
+//     the single-beat path.
 //
-// Tradeoffs vs full parser:
-//   - 3+ messages per packet: only msg1 + msg2 parsed; msg3..N silently
-//     skipped (counters don't increment for them).
-//   - Messages spanning beat 1 -> beat N: not supported. Some
-//     (msg1_type, msg2_type) combinations are too large to fit in 64
-//     bytes (e.g., 0x41 + 0x41 = 36+2+36 = 74); for those msg2 is treated
-//     as unknown.
-//   - No buffer, no LUTRAM, no byte-addressable indexing.
+// Mechanism for spanning:
+//   - On beat 1 we save the full 512-bit tdata into beat1_data.
+//   - For spanning combos we parse msg2's beat-1 fields immediately and
+//     set pending=1, deferring snapshot.
+//   - On beat 2, if pending=1, we complete msg2's remaining fields using
+//     fixed bit slices of {beat1_data, current_tdata}. Then snapshot.
+//   - All bit positions are compile-time constants per (msg1, msg2) combo.
+//     No byte-addressable buffer, no runtime indexing.
+//
+// Limitations vs full parser:
+//   - msg_num >= 3 not supported (msg3..N silently skipped).
+//   - Messages spanning > 2 beats not supported (no ITCH msg is large
+//     enough for this anyway with our 3 supported types).
 // *************************************************************************
 
 module packetparser_322mhz_simple #(
@@ -74,9 +81,6 @@ module packetparser_322mhz_simple #(
     output logic [63:0]  stock_sym,
     output logic [31:0]  price,
 
-    // Per-message-type counters (cmac_clk domain). Latched into the AXI-Lite
-    // snapshot block on every snapshot_toggle, so the host sees consistent
-    // values across all four counts.
     output logic [15:0]  count_add_order,
     output logic [15:0]  count_order_executed,
     output logic [15:0]  count_stock_action,
@@ -88,15 +92,23 @@ module packetparser_322mhz_simple #(
 
     assign mod_rst_done = 1'b1;
 
-    // Unused interface outputs. Tied to constants so the downstream plugin
-    // sees a consistent port signature without inferring storage we don't use.
     assign buffer         = 512'h0;
     assign spillover_len  = 9'h0;
     assign msg_count      = 16'h0;
 
+    // ---------------------------------------------------------------------
+    // Tier 3 state for cross-beat msg2 completion.
+    //   pending           : 1 = next body beat completes msg2 from beat 2
+    //   beat1_data        : full 512 bits of the beat that started msg2
+    //   pending_msg1_type : msg1 type from beat 1 (selects beat-2 splice)
+    //   pending_msg2_type : msg2 type (always 0x41 in current Tier 3 cases)
+    // ---------------------------------------------------------------------
+    logic         pending;
+    logic [511:0] beat1_data;
+    logic [7:0]   pending_msg1_type;
+    logic [7:0]   pending_msg2_type;
+
     always_ff @(posedge cmac_clk[0]) begin
-        // Blocking accumulators so a single cycle can bump a counter by up to
-        // 2 (when one packet contains two messages of the same type).
         logic [15:0] new_count_add_order;
         logic [15:0] new_count_order_executed;
         logic [15:0] new_count_stock_action;
@@ -137,6 +149,11 @@ module packetparser_322mhz_simple #(
             count_order_executed <= 16'h0;
             count_stock_action   <= 16'h0;
             count_unknown        <= 16'h0;
+
+            pending           <= 1'b0;
+            beat1_data        <= 512'h0;
+            pending_msg1_type <= 8'h0;
+            pending_msg2_type <= 8'h0;
         end
         else begin
             parsing_active <= 1'b0;
@@ -147,10 +164,42 @@ module packetparser_322mhz_simple #(
             new_count_unknown        = count_unknown;
 
             if (s_axis_cmac_rx_tvalid[0]) begin
-                if (!p_header_flag) begin
+                if (pending) begin
                     // ------------------------------------------------------
-                    // Beat 0 — Ethernet (14) + IPv4 (20) + UDP (8) +
-                    // MoldUDP64 (20) + 2-byte ITCH msg_len = 64 bytes.
+                    // Beat 2 — finish msg2 by splicing saved beat1_data
+                    // with current tdata. The bit positions are fixed per
+                    // pending_msg1_type / pending_msg2_type combo.
+                    // ------------------------------------------------------
+                    case ({pending_msg1_type, pending_msg2_type})
+                        {8'h41, 8'h41}: begin
+                            // msg2 starts at beat-1 byte 38, so:
+                            //   msg2 bytes 0..25  -> beat1_data[(511-38*8)-:208] = beat1_data[207:0]
+                            //                       (already consumed for fields up to share_amt
+                            //                       and the first 2 bytes of stock_sym)
+                            //   stock_sym  = {beat1_data[15:0], tdata[511:464]}
+                            //   price      = tdata[463:432]
+                            stock_sym <= {beat1_data[15:0],
+                                          s_axis_cmac_rx_tdata[511:464]};
+                            price     <= s_axis_cmac_rx_tdata[463:432];
+                        end
+                        {8'h69, 8'h41}: begin
+                            // msg2 starts at beat-1 byte 33, so:
+                            //   stock_sym  = {beat1_data[55:0], tdata[511:504]}
+                            //   price      = tdata[503:472]
+                            stock_sym <= {beat1_data[55:0],
+                                          s_axis_cmac_rx_tdata[511:504]};
+                            price     <= s_axis_cmac_rx_tdata[503:472];
+                        end
+                        default: ;  // unreachable given how we set pending
+                    endcase
+
+                    parsing_active  <= 1'b1;
+                    snapshot_toggle <= ~snapshot_toggle;
+                    pending         <= 1'b0;
+                end
+                else if (!p_header_flag) begin
+                    // ------------------------------------------------------
+                    // Beat 0 — Ethernet/IPv4/UDP/MoldUDP64/msg_len.
                     // ------------------------------------------------------
                     dst_mac         <= s_axis_cmac_rx_tdata[511:464];
                     src_mac         <= s_axis_cmac_rx_tdata[463:416];
@@ -170,9 +219,12 @@ module packetparser_322mhz_simple #(
                 end
                 else begin
                     // ------------------------------------------------------
-                    // Beat 1 — first ITCH message body starts at byte 0.
-                    // Always parse msg1; counter for its type bumps.
+                    // Beat 1 — parse msg1 always; parse msg2 if msg_num>=2.
+                    // Stash the beat in beat1_data unconditionally so it's
+                    // available if any case sets pending=1.
                     // ------------------------------------------------------
+                    beat1_data <= s_axis_cmac_rx_tdata;
+
                     msg1_type_b = s_axis_cmac_rx_tdata[511:504];
                     msg_type   <= msg1_type_b;
 
@@ -211,22 +263,36 @@ module packetparser_322mhz_simple #(
                         end
                     endcase
 
-                    // --------------------------------------------------------
-                    // Beat 1 (cont) — if msg_num >= 2, attempt to parse msg2.
-                    // msg2 starts at a byte offset that depends on msg1's
-                    // length: 0x41 -> 38, 0x69 -> 33, 0x68 -> 27.
-                    // Field NBAs below overwrite msg1's would-be assignments
-                    // for the same registers (NBA last-wins). msg2 does NOT
-                    // pulse snapshot_toggle a second time (one toggle per
-                    // beat 1 cycle; counters carry the per-message accounting).
-                    // --------------------------------------------------------
                     if (msg_num >= 16'd2) begin
                         case (msg1_type_b)
                             8'h41: begin
-                                // msg2_offset = 38; 26 bytes available; only 0x68 fits.
                                 msg2_type_b = s_axis_cmac_rx_tdata[207:200];
                                 msg_type   <= msg2_type_b;
                                 case (msg2_type_b)
+                                    8'h41: begin
+                                        // SPANS into beat 2. Parse what's in beat 1:
+                                        stock_locate <= s_axis_cmac_rx_tdata[199:184];
+                                        timestamp    <= s_axis_cmac_rx_tdata[167:120];
+                                        ref_num      <= s_axis_cmac_rx_tdata[119:56];
+                                        buy_sell     <= s_axis_cmac_rx_tdata[55:48];
+                                        share_amt    <= s_axis_cmac_rx_tdata[47:16];
+                                        // stock_sym partial high bits at [15:0], rest from beat 2
+                                        // price entirely from beat 2
+                                        pending           <= 1'b1;
+                                        pending_msg1_type <= 8'h41;
+                                        pending_msg2_type <= 8'h41;
+                                        new_count_add_order = new_count_add_order + 16'd1;
+                                        // No snapshot — wait for beat 2
+                                        snapshot_toggle <= snapshot_toggle;  // explicit no-toggle
+                                    end
+                                    8'h69: begin
+                                        // Span body but all parsed fields fit in beat 1
+                                        stock_locate <= s_axis_cmac_rx_tdata[199:184];
+                                        timestamp    <= s_axis_cmac_rx_tdata[167:120];
+                                        ref_num      <= s_axis_cmac_rx_tdata[119:56];
+                                        share_amt    <= s_axis_cmac_rx_tdata[87:56];
+                                        new_count_order_executed = new_count_order_executed + 16'd1;
+                                    end
                                     8'h68: begin
                                         stock_locate <= s_axis_cmac_rx_tdata[199:184];
                                         timestamp    <= s_axis_cmac_rx_tdata[167:120];
@@ -237,10 +303,24 @@ module packetparser_322mhz_simple #(
                                 endcase
                             end
                             8'h69: begin
-                                // msg2_offset = 33; 31 bytes available; 0x69 (31) and 0x68 (25) fit.
                                 msg2_type_b = s_axis_cmac_rx_tdata[247:240];
                                 msg_type   <= msg2_type_b;
                                 case (msg2_type_b)
+                                    8'h41: begin
+                                        // SPANS into beat 2
+                                        stock_locate <= s_axis_cmac_rx_tdata[239:224];
+                                        timestamp    <= s_axis_cmac_rx_tdata[207:160];
+                                        ref_num      <= s_axis_cmac_rx_tdata[159:96];
+                                        buy_sell     <= s_axis_cmac_rx_tdata[95:88];
+                                        share_amt    <= s_axis_cmac_rx_tdata[87:56];
+                                        // stock_sym partial high 7 bytes at [55:0], rest from beat 2
+                                        // price entirely from beat 2
+                                        pending           <= 1'b1;
+                                        pending_msg1_type <= 8'h69;
+                                        pending_msg2_type <= 8'h41;
+                                        new_count_add_order = new_count_add_order + 16'd1;
+                                        snapshot_toggle <= snapshot_toggle;  // no toggle
+                                    end
                                     8'h69: begin
                                         stock_locate <= s_axis_cmac_rx_tdata[239:224];
                                         timestamp    <= s_axis_cmac_rx_tdata[207:160];
@@ -258,7 +338,6 @@ module packetparser_322mhz_simple #(
                                 endcase
                             end
                             8'h68: begin
-                                // msg2_offset = 27; 37 bytes available; all three fit.
                                 msg2_type_b = s_axis_cmac_rx_tdata[295:288];
                                 msg_type   <= msg2_type_b;
                                 case (msg2_type_b)
@@ -288,7 +367,7 @@ module packetparser_322mhz_simple #(
                                     default: new_count_unknown = new_count_unknown + 16'd1;
                                 endcase
                             end
-                            default: ;  // msg1 unknown: don't try msg2
+                            default: ;  // msg1 unknown
                         endcase
                     end
                 end
@@ -296,10 +375,16 @@ module packetparser_322mhz_simple #(
                 if (s_axis_cmac_rx_tlast[0]) begin
                     p_header_flag <= 1'b0;
                     packet_toggle <= ~packet_toggle;
+                    // If pending was set this same cycle, leave it — the
+                    // pending path on the NEXT cycle (if there is one)
+                    // expects the next beat to be beat 2. But if tlast=1
+                    // on the beat that set pending, the packet ended
+                    // prematurely. Clear pending so the next packet's
+                    // beat 0 isn't misread as beat 2.
+                    if (pending) pending <= 1'b0;
                 end
             end
 
-            // Commit accumulators
             count_add_order      <= new_count_add_order;
             count_order_executed <= new_count_order_executed;
             count_stock_action   <= new_count_stock_action;
