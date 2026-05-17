@@ -64,6 +64,14 @@ module packetparser_322mhz_simple #(
     output logic [63:0]  stock_sym,
     output logic [31:0]  price,
 
+    // Per-message-type counters (cmac_clk domain). Latched into the AXI-Lite
+    // snapshot block on every snapshot_toggle, so the host sees consistent
+    // values across all four counts.
+    output logic [15:0]  count_add_order,
+    output logic [15:0]  count_order_executed,
+    output logic [15:0]  count_stock_action,
+    output logic [15:0]  count_unknown,
+
     output logic         snapshot_toggle,
     output logic         packet_toggle
 );
@@ -105,6 +113,11 @@ module packetparser_322mhz_simple #(
             share_amt        <= 32'h0;
             stock_sym        <= 64'h0;
             price            <= 32'h0;
+
+            count_add_order      <= 16'h0;
+            count_order_executed <= 16'h0;
+            count_stock_action   <= 16'h0;
+            count_unknown        <= 16'h0;
         end
         else begin
             // parsing_active is a one-cycle pulse aligned with body parse.
@@ -136,8 +149,12 @@ module packetparser_322mhz_simple #(
                 else begin
                     // ------------------------------------------------------
                     // Beat 1 — ITCH message body. Byte N of the body lives
-                    // at tdata[511 - N*8 -: 8]. Only Add Order (0x41) is
-                    // decoded; other types update msg_type only.
+                    // at tdata[511 - N*8 -: 8]. Three message types decoded:
+                    //   0x41 Add Order               — full field set
+                    //   0x69 Order Executed          — stock_locate, ts, ref, shares
+                    //   0x68 Stock Trading Action    — stock_locate, ts, ref
+                    // Anything else: msg_type captured, unknown counter
+                    // bumped, no field registers updated.
                     // ------------------------------------------------------
                     msg_type <= s_axis_cmac_rx_tdata[511:504];
 
@@ -151,8 +168,35 @@ module packetparser_322mhz_simple #(
                         stock_sym    <= s_axis_cmac_rx_tdata[319:256];
                         price        <= s_axis_cmac_rx_tdata[255:224];
 
+                        count_add_order <= count_add_order + 16'd1;
                         parsing_active  <= 1'b1;
                         snapshot_toggle <= ~snapshot_toggle;
+                    end
+                    else if (s_axis_cmac_rx_tdata[511:504] == 8'h69) begin
+                        stock_locate <= s_axis_cmac_rx_tdata[503:488];
+                        timestamp    <= s_axis_cmac_rx_tdata[471:424];
+                        ref_num      <= s_axis_cmac_rx_tdata[423:360];
+                        share_amt    <= s_axis_cmac_rx_tdata[351:320];
+
+                        count_order_executed <= count_order_executed + 16'd1;
+                        parsing_active  <= 1'b1;
+                        snapshot_toggle <= ~snapshot_toggle;
+                    end
+                    else if (s_axis_cmac_rx_tdata[511:504] == 8'h68) begin
+                        stock_locate <= s_axis_cmac_rx_tdata[503:488];
+                        timestamp    <= s_axis_cmac_rx_tdata[471:424];
+                        ref_num      <= s_axis_cmac_rx_tdata[423:360];
+
+                        count_stock_action <= count_stock_action + 16'd1;
+                        parsing_active  <= 1'b1;
+                        snapshot_toggle <= ~snapshot_toggle;
+                    end
+                    else begin
+                        // Unknown / unsupported message type. Capture the
+                        // type byte (already done above), bump unknown
+                        // counter, do NOT snapshot — the latched field
+                        // registers stay coherent with the last known msg.
+                        count_unknown <= count_unknown + 16'd1;
                     end
                 end
 

@@ -105,6 +105,10 @@ module p2p_322mhz #(
   wire [31:0]                  parser_price;
   wire                         parser_p_header_flag;
   wire                         parser_parsing_active;
+  wire [15:0]                  parser_count_add_order;
+  wire [15:0]                  parser_count_order_executed;
+  wire [15:0]                  parser_count_stock_action;
+  wire [15:0]                  parser_count_unknown;
 
   wire                         reg_en;
   wire                         reg_we;
@@ -132,6 +136,10 @@ module p2p_322mhz #(
   reg  [31:0]                  last_stock_sym_low_reg;
   reg  [31:0]                  last_stock_sym_high_reg;
   reg  [31:0]                  last_price_reg;
+  reg  [31:0]                  count_add_order_reg;
+  reg  [31:0]                  count_order_executed_reg;
+  reg  [31:0]                  count_stock_action_reg;
+  reg  [31:0]                  count_unknown_reg;
 
   reg  [1:0]                   snapshot_toggle_sync;
   reg  [1:0]                   packet_toggle_sync;
@@ -161,6 +169,10 @@ module p2p_322mhz #(
   localparam logic [7:0] REG_LAST_PRICE          = 8'h50;
   localparam logic [7:0] REG_PARSER_STATUS       = 8'h54;
   localparam logic [7:0] REG_CLEAR_COUNTS        = 8'h58;
+  localparam logic [7:0] REG_COUNT_ADD_ORDER      = 8'h5C;
+  localparam logic [7:0] REG_COUNT_ORDER_EXECUTED = 8'h60;
+  localparam logic [7:0] REG_COUNT_STOCK_ACTION   = 8'h64;
+  localparam logic [7:0] REG_COUNT_UNKNOWN        = 8'h68;
 
   generic_reset #(
     .NUM_INPUT_CLK  (1 + NUM_CMAC_PORT),
@@ -244,6 +256,10 @@ module p2p_322mhz #(
     .share_amt             (parser_share_amt),
     .stock_sym             (parser_stock_sym),
     .price                 (parser_price),
+    .count_add_order       (parser_count_add_order),
+    .count_order_executed  (parser_count_order_executed),
+    .count_stock_action    (parser_count_stock_action),
+    .count_unknown         (parser_count_unknown),
     .snapshot_toggle       (parser_snapshot_toggle),
     .packet_toggle         (parser_packet_toggle)
   );
@@ -274,6 +290,10 @@ module p2p_322mhz #(
       last_stock_sym_low_reg     <= 32'h0;
       last_stock_sym_high_reg    <= 32'h0;
       last_price_reg             <= 32'h0;
+      count_add_order_reg        <= 32'h0;
+      count_order_executed_reg   <= 32'h0;
+      count_stock_action_reg     <= 32'h0;
+      count_unknown_reg          <= 32'h0;
     end
     else begin
       snapshot_toggle_sync <= {snapshot_toggle_sync[0], parser_snapshot_toggle};
@@ -302,6 +322,10 @@ module p2p_322mhz #(
           last_stock_sym_low_reg     <= parser_stock_sym[31:0];
           last_stock_sym_high_reg    <= parser_stock_sym[63:32];
           last_price_reg             <= parser_price;
+          count_add_order_reg        <= {16'h0, parser_count_add_order};
+          count_order_executed_reg   <= {16'h0, parser_count_order_executed};
+          count_stock_action_reg     <= {16'h0, parser_count_stock_action};
+          count_unknown_reg          <= {16'h0, parser_count_unknown};
           parsed_msg_count           <= parsed_msg_count + 32'd1;
         end
 
@@ -352,6 +376,10 @@ module p2p_322mhz #(
         REG_LAST_PRICE:          reg_dout <= last_price_reg;
         REG_PARSER_STATUS:       reg_dout <= parser_status;
         REG_CLEAR_COUNTS:        reg_dout <= 32'h0;
+        REG_COUNT_ADD_ORDER:      reg_dout <= count_add_order_reg;
+        REG_COUNT_ORDER_EXECUTED: reg_dout <= count_order_executed_reg;
+        REG_COUNT_STOCK_ACTION:   reg_dout <= count_stock_action_reg;
+        REG_COUNT_UNKNOWN:        reg_dout <= count_unknown_reg;
         default:                 reg_dout <= 32'hDEAD_BEEF;
       endcase
     end
