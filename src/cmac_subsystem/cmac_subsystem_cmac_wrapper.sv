@@ -302,7 +302,7 @@ module cmac_subsystem_cmac_wrapper #(
   assign cmac_clk                = txusrclk2;
   assign init_clk                = axil_aclk;
 
-  assign gt_loopback_in          = {4{3'b000}};
+  assign gt_loopback_in          = {4{3'b010}};
   assign pm_tick                 = 1'b0;
   assign core_rx_reset           = 1'b0;
   assign core_tx_reset           = 1'b0;
