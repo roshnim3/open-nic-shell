@@ -9,8 +9,9 @@ bar_read calls are privileged. All register knowledge (offsets, names,
 decoding) lives here, where students can edit it freely without touching
 the privileged tool.
 
-The p2p_322mhz plugin sits at BAR2 offset 0x10000 per
-box_322mhz_address_map.v.
+The p2p_322mhz plugin sits at BAR2 offset 0x200000: Box1 @ 322MHz is at
+0x200000 in system_config_address_map.sv, and p2p is at offset 0x0 within
+the box per box_322mhz_address_map.v.
 
 Usage:
     python3 read_parser_regs.py
@@ -20,7 +21,7 @@ import subprocess
 import sys
 
 BAR_READ_CMD = ["sudo", "/usr/local/bin/bar_read"]
-PLUGIN_BASE = 0x10000
+PLUGIN_BASE = 0x200000
 
 REGS = [
     (0x00, "REG_MAGIC"),
