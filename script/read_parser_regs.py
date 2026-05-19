@@ -1,29 +1,27 @@
 #!/usr/bin/env python3
 """
-read_parser_regs.py — dump the OpenNIC custom-parser AXI-Lite registers.
+read_parser_regs.py — unprivileged wrapper that dumps the OpenNIC p2p
+plugin's AXI-Lite register block.
 
-The p2p_322mhz plugin's register block is mapped into the host's PCIe BAR2.
-Per box_322mhz_address_map.v, the plugin lives at box-offset 0x0000, and the
-box itself is at BAR2 system-level offset 0x10000. So every register's
-absolute BAR2 offset = 0x10000 + register_offset_within_plugin.
+Calls `sudo /usr/local/bin/bar_read <offset>` once per register and decodes
+the result. This script itself runs without sudo — only the inner
+bar_read calls are privileged. All register knowledge (offsets, names,
+decoding) lives here, where students can edit it freely without touching
+the privileged tool.
+
+The p2p_322mhz plugin sits at BAR2 offset 0x10000 per
+box_322mhz_address_map.v.
 
 Usage:
-    sudo python3 read_parser_regs.py --bdf 0000:03:00.0
-
-Requires root because /sys/bus/pci/devices/<bdf>/resource2 is root-owned.
-Pure stdlib (mmap + struct), no extra deps.
+    python3 read_parser_regs.py
 """
 
-import argparse
-import mmap
-import os
-import struct
+import subprocess
 import sys
 
-# BAR2 offset to the p2p plugin's register block. Box base + p2p sub-base.
+BAR_READ_CMD = ["sudo", "/usr/local/bin/bar_read"]
 PLUGIN_BASE = 0x10000
 
-# Register map (offsets within the plugin, mirroring p2p_322mhz.sv localparams)
 REGS = [
     (0x00, "REG_MAGIC"),
     (0x04, "REG_VERSION"),
@@ -55,13 +53,29 @@ REGS = [
 ]
 
 
+def read_one(offset):
+    """Run bar_read for one offset, return the value as an int."""
+    result = subprocess.run(
+        BAR_READ_CMD + [f"0x{offset:X}"],
+        capture_output=True,
+        text=True,
+    )
+    if result.returncode != 0:
+        sys.stderr.write(
+            f"bar_read failed for offset 0x{offset:X} "
+            f"(exit {result.returncode}):\n{result.stderr}"
+        )
+        sys.exit(result.returncode)
+    return int(result.stdout.strip(), 0)
+
+
 def decode(name, val):
     """Pretty-print sidecar for a few registers."""
     if name == "REG_MAGIC":
-        ascii_form = "".join(
+        chars = "".join(
             chr((val >> (8 * i)) & 0xFF) for i in range(3, -1, -1)
         )
-        return f'"{ascii_form}"'
+        return f'"{chars}"'
     if name == "REG_LAST_MSG_TYPE":
         c = val & 0xFF
         if 0x20 <= c <= 0x7E:
@@ -78,10 +92,7 @@ def decode(name, val):
         return ".".join(str((val >> (8 * i)) & 0xFF) for i in range(3, -1, -1))
     if name == "REG_LAST_PORTS":
         return f"src={val >> 16}  dst={val & 0xFFFF}"
-    if name in (
-        "REG_LAST_STOCK_SYM_LOW",
-        "REG_LAST_STOCK_SYM_HIGH",
-    ):
+    if name in ("REG_LAST_STOCK_SYM_LOW", "REG_LAST_STOCK_SYM_HIGH"):
         chars = "".join(
             chr((val >> (8 * i)) & 0xFF) if 0x20 <= ((val >> (8 * i)) & 0xFF) <= 0x7E else "."
             for i in range(3, -1, -1)
@@ -102,43 +113,11 @@ def decode(name, val):
 
 
 def main():
-    ap = argparse.ArgumentParser()
-    ap.add_argument(
-        "--bdf",
-        default="0000:03:00.0",
-        help="PCI BDF of the U55C (default: 0000:03:00.0)",
-    )
-    args = ap.parse_args()
-
-    resource_path = f"/sys/bus/pci/devices/{args.bdf}/resource2"
-    if not os.path.exists(resource_path):
-        print(f"ERROR: {resource_path} does not exist", file=sys.stderr)
-        print("       Check that the BDF is correct and the FPGA is enumerated:", file=sys.stderr)
-        print("       lspci | grep -i xilinx", file=sys.stderr)
-        sys.exit(1)
-
-    try:
-        fd = os.open(resource_path, os.O_RDONLY)
-    except PermissionError:
-        print(f"ERROR: cannot open {resource_path} (need root). Re-run with sudo.", file=sys.stderr)
-        sys.exit(1)
-
-    bar_size = os.fstat(fd).st_size
-    mm = mmap.mmap(fd, bar_size, prot=mmap.PROT_READ)
-    os.close(fd)
-
-    print(f"BAR2 mapped, size = {bar_size} bytes ({bar_size // 1024} KB)")
-    print(f"Plugin register block at BAR2 offset 0x{PLUGIN_BASE:08X}\n")
     print(f"  {'Register':<26} {'Value':<14} Decoded")
     print(f"  {'-' * 26} {'-' * 14} {'-' * 24}")
-
     for off, name in REGS:
-        absolute = PLUGIN_BASE + off
-        raw = bytes(mm[absolute:absolute + 4])
-        val = struct.unpack("<I", raw)[0]
+        val = read_one(PLUGIN_BASE + off)
         print(f"  {name:<26} 0x{val:08X}     {decode(name, val)}")
-
-    mm.close()
 
 
 if __name__ == "__main__":
