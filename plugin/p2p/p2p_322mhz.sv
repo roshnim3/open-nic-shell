@@ -110,6 +110,14 @@ module p2p_322mhz #(
   wire [15:0]                  parser_count_stock_action;
   wire [15:0]                  parser_count_unknown;
 
+  // Diagnostic counters from the parser (cmac_clk domain). Sampled into
+  // axil_aclk-domain shadow registers below for AXI-Lite read.
+  wire [31:0]                  parser_dbg_beat_count;
+  wire [31:0]                  parser_dbg_beat0_count;
+  wire [31:0]                  parser_dbg_beat1_count;
+  wire [7:0]                   parser_dbg_last_msg_type_seen;
+  wire [63:0]                  parser_dbg_last_tkeep_on_tlast;
+
   wire                         reg_en;
   wire                         reg_we;
   wire [7:0]                   reg_addr;
@@ -140,6 +148,15 @@ module p2p_322mhz #(
   reg  [31:0]                  count_order_executed_reg;
   reg  [31:0]                  count_stock_action_reg;
   reg  [31:0]                  count_unknown_reg;
+
+  // axil_aclk-domain shadows of the parser's diagnostic counters. Single-flop
+  // resample of a free-running counter from cmac_clk — only used at idle for
+  // diagnostics, so the rare metastable/torn read is acceptable.
+  reg  [31:0]                  dbg_beat_count_reg;
+  reg  [31:0]                  dbg_beat0_count_reg;
+  reg  [31:0]                  dbg_beat1_count_reg;
+  reg  [7:0]                   dbg_last_msg_type_seen_reg;
+  reg  [63:0]                  dbg_last_tkeep_on_tlast_reg;
 
   reg  [1:0]                   snapshot_toggle_sync;
   reg  [1:0]                   packet_toggle_sync;
@@ -173,6 +190,12 @@ module p2p_322mhz #(
   localparam logic [7:0] REG_COUNT_ORDER_EXECUTED = 8'h60;
   localparam logic [7:0] REG_COUNT_STOCK_ACTION   = 8'h64;
   localparam logic [7:0] REG_COUNT_UNKNOWN        = 8'h68;
+  localparam logic [7:0] REG_DBG_BEAT_COUNT       = 8'h6C;
+  localparam logic [7:0] REG_DBG_BEAT0_COUNT      = 8'h70;
+  localparam logic [7:0] REG_DBG_BEAT1_COUNT      = 8'h74;
+  localparam logic [7:0] REG_DBG_LAST_MSG_TYPE    = 8'h78;
+  localparam logic [7:0] REG_DBG_LAST_TKEEP_LOW   = 8'h7C;
+  localparam logic [7:0] REG_DBG_LAST_TKEEP_HIGH  = 8'h80;
 
   generic_reset #(
     .NUM_INPUT_CLK  (1 + NUM_CMAC_PORT),
@@ -261,8 +284,32 @@ module p2p_322mhz #(
     .count_stock_action    (parser_count_stock_action),
     .count_unknown         (parser_count_unknown),
     .snapshot_toggle       (parser_snapshot_toggle),
-    .packet_toggle         (parser_packet_toggle)
+    .packet_toggle         (parser_packet_toggle),
+    .dbg_beat_count          (parser_dbg_beat_count),
+    .dbg_beat0_count         (parser_dbg_beat0_count),
+    .dbg_beat1_count         (parser_dbg_beat1_count),
+    .dbg_last_msg_type_seen  (parser_dbg_last_msg_type_seen),
+    .dbg_last_tkeep_on_tlast (parser_dbg_last_tkeep_on_tlast)
   );
+
+  // Re-sample diagnostic counters into the axil_aclk domain so they can be
+  // read via AXI-Lite. Single flop; only meaningful when the parser is idle.
+  always_ff @(posedge axil_aclk) begin
+    if (!axil_aresetn) begin
+      dbg_beat_count_reg          <= 32'h0;
+      dbg_beat0_count_reg         <= 32'h0;
+      dbg_beat1_count_reg         <= 32'h0;
+      dbg_last_msg_type_seen_reg  <= 8'h0;
+      dbg_last_tkeep_on_tlast_reg <= 64'h0;
+    end
+    else begin
+      dbg_beat_count_reg          <= parser_dbg_beat_count;
+      dbg_beat0_count_reg         <= parser_dbg_beat0_count;
+      dbg_beat1_count_reg         <= parser_dbg_beat1_count;
+      dbg_last_msg_type_seen_reg  <= parser_dbg_last_msg_type_seen;
+      dbg_last_tkeep_on_tlast_reg <= parser_dbg_last_tkeep_on_tlast;
+    end
+  end
 
   always_ff @(posedge axil_aclk) begin
     if (!axil_aresetn) begin
@@ -380,6 +427,12 @@ module p2p_322mhz #(
         REG_COUNT_ORDER_EXECUTED: reg_dout <= count_order_executed_reg;
         REG_COUNT_STOCK_ACTION:   reg_dout <= count_stock_action_reg;
         REG_COUNT_UNKNOWN:        reg_dout <= count_unknown_reg;
+        REG_DBG_BEAT_COUNT:       reg_dout <= dbg_beat_count_reg;
+        REG_DBG_BEAT0_COUNT:      reg_dout <= dbg_beat0_count_reg;
+        REG_DBG_BEAT1_COUNT:      reg_dout <= dbg_beat1_count_reg;
+        REG_DBG_LAST_MSG_TYPE:    reg_dout <= {24'h0, dbg_last_msg_type_seen_reg};
+        REG_DBG_LAST_TKEEP_LOW:   reg_dout <= dbg_last_tkeep_on_tlast_reg[31:0];
+        REG_DBG_LAST_TKEEP_HIGH:  reg_dout <= dbg_last_tkeep_on_tlast_reg[63:32];
         default:                 reg_dout <= 32'hDEAD_BEEF;
       endcase
     end

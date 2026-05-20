@@ -51,6 +51,12 @@ REGS = [
     (0x60, "REG_COUNT_ORDER_EXECUTED"),
     (0x64, "REG_COUNT_STOCK_ACTION"),
     (0x68, "REG_COUNT_UNKNOWN"),
+    (0x6C, "REG_DBG_BEAT_COUNT"),
+    (0x70, "REG_DBG_BEAT0_COUNT"),
+    (0x74, "REG_DBG_BEAT1_COUNT"),
+    (0x78, "REG_DBG_LAST_MSG_TYPE"),
+    (0x7C, "REG_DBG_LAST_TKEEP_LOW"),
+    (0x80, "REG_DBG_LAST_TKEEP_HIGH"),
 ]
 
 
@@ -108,8 +114,18 @@ def decode(name, val):
         "REG_COUNT_ORDER_EXECUTED",
         "REG_COUNT_STOCK_ACTION",
         "REG_COUNT_UNKNOWN",
+        "REG_DBG_BEAT_COUNT",
+        "REG_DBG_BEAT0_COUNT",
+        "REG_DBG_BEAT1_COUNT",
     ):
         return f"({val})"
+    if name == "REG_DBG_LAST_MSG_TYPE":
+        c = val & 0xFF
+        if 0x20 <= c <= 0x7E:
+            return f"'{chr(c)}'  (0x{c:02X})"
+        return f"0x{c:02X}"
+    if name in ("REG_DBG_LAST_TKEEP_LOW", "REG_DBG_LAST_TKEEP_HIGH"):
+        return f"{bin(val).count('1')} bits set"
     return ""
 
 

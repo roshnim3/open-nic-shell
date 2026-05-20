@@ -87,7 +87,16 @@ module packetparser_322mhz_simple #(
     output logic [15:0]  count_unknown,
 
     output logic         snapshot_toggle,
-    output logic         packet_toggle
+    output logic         packet_toggle,
+
+    // Diagnostic counters — written every cycle, snapshot via dbg_toggle.
+    // Lets us tell whether the parser ever reaches its Beat-1 branch and
+    // what msg_type byte the CMAC is actually delivering.
+    output logic [31:0]  dbg_beat_count,
+    output logic [31:0]  dbg_beat0_count,
+    output logic [31:0]  dbg_beat1_count,
+    output logic [7:0]   dbg_last_msg_type_seen,
+    output logic [63:0]  dbg_last_tkeep_on_tlast
 );
 
     assign mod_rst_done = 1'b1;
@@ -154,6 +163,12 @@ module packetparser_322mhz_simple #(
             beat1_data        <= 512'h0;
             pending_msg1_type <= 8'h0;
             pending_msg2_type <= 8'h0;
+
+            dbg_beat_count          <= 32'h0;
+            dbg_beat0_count         <= 32'h0;
+            dbg_beat1_count         <= 32'h0;
+            dbg_last_msg_type_seen  <= 8'h0;
+            dbg_last_tkeep_on_tlast <= 64'h0;
         end
         else begin
             parsing_active <= 1'b0;
@@ -164,6 +179,7 @@ module packetparser_322mhz_simple #(
             new_count_unknown        = count_unknown;
 
             if (s_axis_cmac_rx_tvalid[0]) begin
+                dbg_beat_count <= dbg_beat_count + 32'd1;
                 if (pending) begin
                     // ------------------------------------------------------
                     // Beat 2 — finish msg2 by splicing saved beat1_data
@@ -201,6 +217,7 @@ module packetparser_322mhz_simple #(
                     // ------------------------------------------------------
                     // Beat 0 — Ethernet/IPv4/UDP/MoldUDP64/msg_len.
                     // ------------------------------------------------------
+                    dbg_beat0_count <= dbg_beat0_count + 32'd1;
                     dst_mac         <= s_axis_cmac_rx_tdata[511:464];
                     src_mac         <= s_axis_cmac_rx_tdata[463:416];
                     header_checksum <= s_axis_cmac_rx_tdata[319:304];
@@ -223,6 +240,8 @@ module packetparser_322mhz_simple #(
                     // Stash the beat in beat1_data unconditionally so it's
                     // available if any case sets pending=1.
                     // ------------------------------------------------------
+                    dbg_beat1_count        <= dbg_beat1_count + 32'd1;
+                    dbg_last_msg_type_seen <= s_axis_cmac_rx_tdata[511:504];
                     beat1_data <= s_axis_cmac_rx_tdata;
 
                     msg1_type_b = s_axis_cmac_rx_tdata[511:504];
@@ -373,6 +392,7 @@ module packetparser_322mhz_simple #(
                 end
 
                 if (s_axis_cmac_rx_tlast[0]) begin
+                    dbg_last_tkeep_on_tlast <= s_axis_cmac_rx_tkeep[63:0];
                     p_header_flag <= 1'b0;
                     packet_toggle <= ~packet_toggle;
                     // If pending was set this same cycle, leave it — the
