@@ -106,6 +106,25 @@ module packetparser_322mhz_simple #(
     assign msg_count      = 16'h0;
 
     // ---------------------------------------------------------------------
+    // Byte-swap the incoming CMAC RX bus.
+    //
+    // Per Xilinx PG203, the 100G CMAC AXI-Stream interface places byte 0 of
+    // the packet at tdata[7:0] (little-endian byte placement on the bus).
+    // The field-extract code below was written assuming byte 0 at tdata
+    // [511:504] (big-endian / network-order placement). Rather than rewrite
+    // every offset, we reverse the byte order at the boundary and let the
+    // rest of the parser run unchanged.
+    //
+    // After the swap: byte n of the packet sits at tdata_be[8*(63-n)+7 : 8*(63-n)].
+    // ---------------------------------------------------------------------
+    wire [511:0] tdata_be;
+    generate
+        for (genvar bi = 0; bi < 64; bi = bi + 1) begin : g_tdata_swap
+            assign tdata_be[8*(63 - bi) +: 8] = s_axis_cmac_rx_tdata[8*bi +: 8];
+        end
+    endgenerate
+
+    // ---------------------------------------------------------------------
     // Tier 3 state for cross-beat msg2 completion.
     //   pending           : 1 = next body beat completes msg2 from beat 2
     //   beat1_data        : full 512 bits of the beat that started msg2
@@ -195,16 +214,16 @@ module packetparser_322mhz_simple #(
                             //   stock_sym  = {beat1_data[15:0], tdata[511:464]}
                             //   price      = tdata[463:432]
                             stock_sym <= {beat1_data[15:0],
-                                          s_axis_cmac_rx_tdata[511:464]};
-                            price     <= s_axis_cmac_rx_tdata[463:432];
+                                          tdata_be[511:464]};
+                            price     <= tdata_be[463:432];
                         end
                         {8'h69, 8'h41}: begin
                             // msg2 starts at beat-1 byte 33, so:
                             //   stock_sym  = {beat1_data[55:0], tdata[511:504]}
                             //   price      = tdata[503:472]
                             stock_sym <= {beat1_data[55:0],
-                                          s_axis_cmac_rx_tdata[511:504]};
-                            price     <= s_axis_cmac_rx_tdata[503:472];
+                                          tdata_be[511:504]};
+                            price     <= tdata_be[503:472];
                         end
                         default: ;  // unreachable given how we set pending
                     endcase
@@ -218,19 +237,19 @@ module packetparser_322mhz_simple #(
                     // Beat 0 — Ethernet/IPv4/UDP/MoldUDP64/msg_len.
                     // ------------------------------------------------------
                     dbg_beat0_count <= dbg_beat0_count + 32'd1;
-                    dst_mac         <= s_axis_cmac_rx_tdata[511:464];
-                    src_mac         <= s_axis_cmac_rx_tdata[463:416];
-                    header_checksum <= s_axis_cmac_rx_tdata[319:304];
-                    src_ip          <= s_axis_cmac_rx_tdata[303:272];
-                    dst_ip          <= s_axis_cmac_rx_tdata[271:240];
-                    src_port        <= s_axis_cmac_rx_tdata[239:224];
-                    dst_port        <= s_axis_cmac_rx_tdata[223:208];
-                    length          <= s_axis_cmac_rx_tdata[207:192];
-                    checksum        <= s_axis_cmac_rx_tdata[191:176];
-                    section         <= s_axis_cmac_rx_tdata[175:96];
-                    seq             <= s_axis_cmac_rx_tdata[95:32];
-                    msg_num         <= s_axis_cmac_rx_tdata[31:16];
-                    msg_len         <= s_axis_cmac_rx_tdata[15:0];
+                    dst_mac         <= tdata_be[511:464];
+                    src_mac         <= tdata_be[463:416];
+                    header_checksum <= tdata_be[319:304];
+                    src_ip          <= tdata_be[303:272];
+                    dst_ip          <= tdata_be[271:240];
+                    src_port        <= tdata_be[239:224];
+                    dst_port        <= tdata_be[223:208];
+                    length          <= tdata_be[207:192];
+                    checksum        <= tdata_be[191:176];
+                    section         <= tdata_be[175:96];
+                    seq             <= tdata_be[95:32];
+                    msg_num         <= tdata_be[31:16];
+                    msg_len         <= tdata_be[15:0];
 
                     p_header_flag   <= 1'b1;
                 end
@@ -241,38 +260,38 @@ module packetparser_322mhz_simple #(
                     // available if any case sets pending=1.
                     // ------------------------------------------------------
                     dbg_beat1_count        <= dbg_beat1_count + 32'd1;
-                    dbg_last_msg_type_seen <= s_axis_cmac_rx_tdata[511:504];
-                    beat1_data <= s_axis_cmac_rx_tdata;
+                    dbg_last_msg_type_seen <= tdata_be[511:504];
+                    beat1_data <= tdata_be;
 
-                    msg1_type_b = s_axis_cmac_rx_tdata[511:504];
+                    msg1_type_b = tdata_be[511:504];
                     msg_type   <= msg1_type_b;
 
                     case (msg1_type_b)
                         8'h41: begin
-                            stock_locate <= s_axis_cmac_rx_tdata[503:488];
-                            timestamp    <= s_axis_cmac_rx_tdata[471:424];
-                            ref_num      <= s_axis_cmac_rx_tdata[423:360];
-                            buy_sell     <= s_axis_cmac_rx_tdata[359:352];
-                            share_amt    <= s_axis_cmac_rx_tdata[351:320];
-                            stock_sym    <= s_axis_cmac_rx_tdata[319:256];
-                            price        <= s_axis_cmac_rx_tdata[255:224];
+                            stock_locate <= tdata_be[503:488];
+                            timestamp    <= tdata_be[471:424];
+                            ref_num      <= tdata_be[423:360];
+                            buy_sell     <= tdata_be[359:352];
+                            share_amt    <= tdata_be[351:320];
+                            stock_sym    <= tdata_be[319:256];
+                            price        <= tdata_be[255:224];
                             new_count_add_order = new_count_add_order + 16'd1;
                             parsing_active  <= 1'b1;
                             snapshot_toggle <= ~snapshot_toggle;
                         end
                         8'h69: begin
-                            stock_locate <= s_axis_cmac_rx_tdata[503:488];
-                            timestamp    <= s_axis_cmac_rx_tdata[471:424];
-                            ref_num      <= s_axis_cmac_rx_tdata[423:360];
-                            share_amt    <= s_axis_cmac_rx_tdata[351:320];
+                            stock_locate <= tdata_be[503:488];
+                            timestamp    <= tdata_be[471:424];
+                            ref_num      <= tdata_be[423:360];
+                            share_amt    <= tdata_be[351:320];
                             new_count_order_executed = new_count_order_executed + 16'd1;
                             parsing_active  <= 1'b1;
                             snapshot_toggle <= ~snapshot_toggle;
                         end
                         8'h68: begin
-                            stock_locate <= s_axis_cmac_rx_tdata[503:488];
-                            timestamp    <= s_axis_cmac_rx_tdata[471:424];
-                            ref_num      <= s_axis_cmac_rx_tdata[423:360];
+                            stock_locate <= tdata_be[503:488];
+                            timestamp    <= tdata_be[471:424];
+                            ref_num      <= tdata_be[423:360];
                             new_count_stock_action = new_count_stock_action + 16'd1;
                             parsing_active  <= 1'b1;
                             snapshot_toggle <= ~snapshot_toggle;
@@ -285,16 +304,16 @@ module packetparser_322mhz_simple #(
                     if (msg_num >= 16'd2) begin
                         case (msg1_type_b)
                             8'h41: begin
-                                msg2_type_b = s_axis_cmac_rx_tdata[207:200];
+                                msg2_type_b = tdata_be[207:200];
                                 msg_type   <= msg2_type_b;
                                 case (msg2_type_b)
                                     8'h41: begin
                                         // SPANS into beat 2. Parse what's in beat 1:
-                                        stock_locate <= s_axis_cmac_rx_tdata[199:184];
-                                        timestamp    <= s_axis_cmac_rx_tdata[167:120];
-                                        ref_num      <= s_axis_cmac_rx_tdata[119:56];
-                                        buy_sell     <= s_axis_cmac_rx_tdata[55:48];
-                                        share_amt    <= s_axis_cmac_rx_tdata[47:16];
+                                        stock_locate <= tdata_be[199:184];
+                                        timestamp    <= tdata_be[167:120];
+                                        ref_num      <= tdata_be[119:56];
+                                        buy_sell     <= tdata_be[55:48];
+                                        share_amt    <= tdata_be[47:16];
                                         // stock_sym partial high bits at [15:0], rest from beat 2
                                         // price entirely from beat 2
                                         pending           <= 1'b1;
@@ -306,32 +325,32 @@ module packetparser_322mhz_simple #(
                                     end
                                     8'h69: begin
                                         // Span body but all parsed fields fit in beat 1
-                                        stock_locate <= s_axis_cmac_rx_tdata[199:184];
-                                        timestamp    <= s_axis_cmac_rx_tdata[167:120];
-                                        ref_num      <= s_axis_cmac_rx_tdata[119:56];
-                                        share_amt    <= s_axis_cmac_rx_tdata[87:56];
+                                        stock_locate <= tdata_be[199:184];
+                                        timestamp    <= tdata_be[167:120];
+                                        ref_num      <= tdata_be[119:56];
+                                        share_amt    <= tdata_be[87:56];
                                         new_count_order_executed = new_count_order_executed + 16'd1;
                                     end
                                     8'h68: begin
-                                        stock_locate <= s_axis_cmac_rx_tdata[199:184];
-                                        timestamp    <= s_axis_cmac_rx_tdata[167:120];
-                                        ref_num      <= s_axis_cmac_rx_tdata[119:56];
+                                        stock_locate <= tdata_be[199:184];
+                                        timestamp    <= tdata_be[167:120];
+                                        ref_num      <= tdata_be[119:56];
                                         new_count_stock_action = new_count_stock_action + 16'd1;
                                     end
                                     default: new_count_unknown = new_count_unknown + 16'd1;
                                 endcase
                             end
                             8'h69: begin
-                                msg2_type_b = s_axis_cmac_rx_tdata[247:240];
+                                msg2_type_b = tdata_be[247:240];
                                 msg_type   <= msg2_type_b;
                                 case (msg2_type_b)
                                     8'h41: begin
                                         // SPANS into beat 2
-                                        stock_locate <= s_axis_cmac_rx_tdata[239:224];
-                                        timestamp    <= s_axis_cmac_rx_tdata[207:160];
-                                        ref_num      <= s_axis_cmac_rx_tdata[159:96];
-                                        buy_sell     <= s_axis_cmac_rx_tdata[95:88];
-                                        share_amt    <= s_axis_cmac_rx_tdata[87:56];
+                                        stock_locate <= tdata_be[239:224];
+                                        timestamp    <= tdata_be[207:160];
+                                        ref_num      <= tdata_be[159:96];
+                                        buy_sell     <= tdata_be[95:88];
+                                        share_amt    <= tdata_be[87:56];
                                         // stock_sym partial high 7 bytes at [55:0], rest from beat 2
                                         // price entirely from beat 2
                                         pending           <= 1'b1;
@@ -341,46 +360,46 @@ module packetparser_322mhz_simple #(
                                         snapshot_toggle <= snapshot_toggle;  // no toggle
                                     end
                                     8'h69: begin
-                                        stock_locate <= s_axis_cmac_rx_tdata[239:224];
-                                        timestamp    <= s_axis_cmac_rx_tdata[207:160];
-                                        ref_num      <= s_axis_cmac_rx_tdata[159:96];
-                                        share_amt    <= s_axis_cmac_rx_tdata[87:56];
+                                        stock_locate <= tdata_be[239:224];
+                                        timestamp    <= tdata_be[207:160];
+                                        ref_num      <= tdata_be[159:96];
+                                        share_amt    <= tdata_be[87:56];
                                         new_count_order_executed = new_count_order_executed + 16'd1;
                                     end
                                     8'h68: begin
-                                        stock_locate <= s_axis_cmac_rx_tdata[239:224];
-                                        timestamp    <= s_axis_cmac_rx_tdata[207:160];
-                                        ref_num      <= s_axis_cmac_rx_tdata[159:96];
+                                        stock_locate <= tdata_be[239:224];
+                                        timestamp    <= tdata_be[207:160];
+                                        ref_num      <= tdata_be[159:96];
                                         new_count_stock_action = new_count_stock_action + 16'd1;
                                     end
                                     default: new_count_unknown = new_count_unknown + 16'd1;
                                 endcase
                             end
                             8'h68: begin
-                                msg2_type_b = s_axis_cmac_rx_tdata[295:288];
+                                msg2_type_b = tdata_be[295:288];
                                 msg_type   <= msg2_type_b;
                                 case (msg2_type_b)
                                     8'h41: begin
-                                        stock_locate <= s_axis_cmac_rx_tdata[287:272];
-                                        timestamp    <= s_axis_cmac_rx_tdata[255:208];
-                                        ref_num      <= s_axis_cmac_rx_tdata[207:144];
-                                        buy_sell     <= s_axis_cmac_rx_tdata[143:136];
-                                        share_amt    <= s_axis_cmac_rx_tdata[135:104];
-                                        stock_sym    <= s_axis_cmac_rx_tdata[103:40];
-                                        price        <= s_axis_cmac_rx_tdata[39:8];
+                                        stock_locate <= tdata_be[287:272];
+                                        timestamp    <= tdata_be[255:208];
+                                        ref_num      <= tdata_be[207:144];
+                                        buy_sell     <= tdata_be[143:136];
+                                        share_amt    <= tdata_be[135:104];
+                                        stock_sym    <= tdata_be[103:40];
+                                        price        <= tdata_be[39:8];
                                         new_count_add_order = new_count_add_order + 16'd1;
                                     end
                                     8'h69: begin
-                                        stock_locate <= s_axis_cmac_rx_tdata[287:272];
-                                        timestamp    <= s_axis_cmac_rx_tdata[255:208];
-                                        ref_num      <= s_axis_cmac_rx_tdata[207:144];
-                                        share_amt    <= s_axis_cmac_rx_tdata[135:104];
+                                        stock_locate <= tdata_be[287:272];
+                                        timestamp    <= tdata_be[255:208];
+                                        ref_num      <= tdata_be[207:144];
+                                        share_amt    <= tdata_be[135:104];
                                         new_count_order_executed = new_count_order_executed + 16'd1;
                                     end
                                     8'h68: begin
-                                        stock_locate <= s_axis_cmac_rx_tdata[287:272];
-                                        timestamp    <= s_axis_cmac_rx_tdata[255:208];
-                                        ref_num      <= s_axis_cmac_rx_tdata[207:144];
+                                        stock_locate <= tdata_be[287:272];
+                                        timestamp    <= tdata_be[255:208];
+                                        ref_num      <= tdata_be[207:144];
                                         new_count_stock_action = new_count_stock_action + 16'd1;
                                     end
                                     default: new_count_unknown = new_count_unknown + 16'd1;
