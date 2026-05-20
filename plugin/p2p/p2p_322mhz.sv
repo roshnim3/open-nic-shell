@@ -241,14 +241,19 @@ module p2p_322mhz #(
     .reg_rstn       (axil_aresetn)
   );
 
+  // STRATEGY B (txtap branch): tap the kernel → CMAC TX path instead of the
+  // CMAC RX → kernel path. This bypasses the CMAC RX entirely so the parser
+  // is exercised by any UDP packet sent from Linux, with no dependence on
+  // loopback config being correct. Diagnostic counters tell us what bytes
+  // the parser actually sees on the TX-side AXI-Stream.
   packetparser_322mhz_simple #(
     .NUM_CMAC_PORT (NUM_CMAC_PORT)
   ) parser_inst (
-    .s_axis_cmac_rx_tvalid (s_axis_cmac_rx_tvalid),
-    .s_axis_cmac_rx_tdata  (s_axis_cmac_rx_tdata),
-    .s_axis_cmac_rx_tkeep  (s_axis_cmac_rx_tkeep),
-    .s_axis_cmac_rx_tlast  (s_axis_cmac_rx_tlast),
-    .s_axis_cmac_rx_tuser_err (s_axis_cmac_rx_tuser_err),
+    .s_axis_cmac_rx_tvalid (s_axis_adap_tx_322mhz_tvalid),
+    .s_axis_cmac_rx_tdata  (s_axis_adap_tx_322mhz_tdata),
+    .s_axis_cmac_rx_tkeep  (s_axis_adap_tx_322mhz_tkeep),
+    .s_axis_cmac_rx_tlast  (s_axis_adap_tx_322mhz_tlast),
+    .s_axis_cmac_rx_tuser_err (s_axis_adap_tx_322mhz_tuser_err),
     .mod_rstn              (cmac_rstn[0]),
     .mod_rst_done          (),
     .axil_aclk             (axil_aclk),
