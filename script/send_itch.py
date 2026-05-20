@@ -81,7 +81,7 @@ def make_itch_add_order(
     )
 
 
-def make_payload(sequence: int, price: int, shares: int) -> bytes:
+def make_payload(sequence: int, price: int, shares: int, pad_bytes: int = 0) -> bytes:
     session = b"TESTITCH"
 
     itch_msg = make_itch_add_order(
@@ -103,7 +103,7 @@ def make_payload(sequence: int, price: int, shares: int) -> bytes:
 
     msg_len = struct.pack(">H", len(itch_msg))
 
-    return mold_header + msg_len + itch_msg
+    return mold_header + msg_len + itch_msg + (b"\x00" * pad_bytes)
 
 
 def main() -> None:
@@ -113,6 +113,7 @@ def main() -> None:
     parser.add_argument("--src-ip", default=None, help="Optional source IP/interface bind address")
     parser.add_argument("--interval", type=float, default=1.0, help="Seconds between packets")
     parser.add_argument("--count", type=int, default=0, help="Number of packets to send, 0 = forever")
+    parser.add_argument("--pad-bytes", type=int, default=0, help="Trailing zero padding appended to the UDP payload")
     args = parser.parse_args()
 
     sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
@@ -129,7 +130,7 @@ def main() -> None:
         price = 9_989_680 + sent
         shares = 1000 + sent
 
-        payload = make_payload(sequence=sequence, price=price, shares=shares)
+        payload = make_payload(sequence=sequence, price=price, shares=shares, pad_bytes=args.pad_bytes)
 
         sock.sendto(payload, (args.dst_ip, args.dst_port))
 

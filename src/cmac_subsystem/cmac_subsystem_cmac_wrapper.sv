@@ -302,8 +302,18 @@ module cmac_subsystem_cmac_wrapper #(
   assign cmac_clk                = txusrclk2;
   assign init_clk                = axil_aclk;
 
-  assign gt_loopback_in          = {4{3'b000}};
-  assign pm_tick                 = 1'b0;
+  assign gt_loopback_in          = {4{3'b001}};
+
+  // Drive pm_tick periodically so the CMAC's internal stat counters can be
+  // sampled into the AXI-Lite-readable shadow registers. With cmac_clk ~322
+  // MHz, a 16-bit free-running divider rolls over every ~204 us, well below
+  // the IP's required sub-millisecond cadence and well above the minimum
+  // 4-cycle pulse spacing.
+  reg [15:0] pm_tick_div;
+  always @(posedge cmac_clk) begin
+    pm_tick_div <= pm_tick_div + 1'b1;
+  end
+  assign pm_tick = &pm_tick_div;
   assign core_rx_reset           = 1'b0;
   assign core_tx_reset           = 1'b0;
   assign gtwiz_reset_rx_datapath = 1'b0;
